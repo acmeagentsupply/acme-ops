@@ -1,0 +1,174 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.23",
+    "lastTouchedAt": "2026-02-25T03:50:37.446Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-02-25T02:24:49.520Z",
+    "lastRunVersion": "2026.2.23",
+    "lastRunCommand": "configure",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:default": {
+        "provider": "anthropic",
+        "mode": "api_key"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-6",
+        "fallbacks": [
+          "google/gemini-2.5-flash-lite",
+          "openai/gpt-4-turbo",
+          "openrouter/deepseek/deepseek-v3.1-terminus:exacto"
+        ]
+      },
+      "models": {
+        "anthropic/claude-sonnet-4-6": {
+          "alias": "sonnet"
+        },
+        "google/gemini-2.5-flash-lite": {
+          "alias": "gemini"
+        },
+        "openai/gpt-4.1-mini": {
+          "alias": "mini"
+        },
+        "openai-codex/gpt-5.3-codex": {
+          "alias": "codex"
+        },
+        "openrouter/deepseek/deepseek-v3.1-terminus:exacto": {
+          "alias": "deepseek"
+        },
+        "anthropic/claude-opus-4-6": {
+          "alias": "opus"
+        },
+        "anthropic/claude-INVALID-BREAK-TEST": {}
+      }
+    },
+    "lanes": {
+      "background": {
+        "model": [
+          "openai/gpt-4.1-mini",
+          "google/gemini-2.5-flash-lite",
+          "openrouter/deepseek/deepseek-v3.1-terminus:exacto"
+        ]
+      }
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": true,
+        "apiKey": "BSAxLs4Et39qmiNx1dcajEHSDQqpYNs"
+      },
+      "fetch": {
+        "enabled": true
+      }
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "responsePrefix": "[Hendrik]",
+      "dmPolicy": "allowlist",
+      "selfChatMode": true,
+      "allowFrom": [
+        "+19787606557"
+      ],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
+    },
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "botToken": "REDACTED_TELEGRAM_BOT_TOKEN",
+      "groupPolicy": "allowlist",
+      "streaming": "partial"
+    },
+    "discord": {
+      "enabled": true,
+      "token": "REDACTED_DISCORD_BOT_TOKEN",
+      "groupPolicy": "allowlist",
+      "streaming": "off"
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "controlUi": {
+      "allowedOrigins": [
+        "https://agentmacbook.tail333b19.ts.net"
+      ],
+      "allowInsecureAuth": false
+    },
+    "auth": {
+      "mode": "password",
+      "token": "2c4106a4803b4952c3adbbfe251f08a6de68f222f58468e031825c901af08292",
+      "password": "VVchR3o8P8zIATra8VhE9/fePbu19n/i"
+    },
+    "tailscale": {
+      "mode": "off"
+    }
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
+    },
+    "entries": {
+      "mcporter": {
+        "enabled": true
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "whatsapp": {
+        "enabled": true
+      },
+      "telegram": {
+        "enabled": true
+      },
+      "discord": {
+        "enabled": true
+      }
+    }
+  },
+  "sphinxgate": {
+    "enabled": true,
+    "lanes": {
+      "interactive": {
+        "allow_providers": [
+          "anthropic",
+          "openai",
+          "google",
+          "openrouter"
+        ],
+        "max_latency_ms": 180000,
+        "max_cost_tier": "high"
+      },
+      "background": {
+        "deny_providers": [
+          "anthropic"
+        ],
+        "max_latency_ms": 60000,
+        "max_cost_tier": "low"
+      }
+    },
+    "failover": {
+      "max_attempts": 4,
+      "fail_open": false
+    }
+  }
+}

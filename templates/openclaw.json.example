@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "enabled": true,
+    "path": "/hooks",
+    "token": "REPLACE_ME",
+    "presets": ["gmail"],
+    "gmail": {
+      "account": "hendrik.homarus@gmail.com",
+      "label": "INBOX",
+      "topic": "projects/<PROJECT_ID>/topics/<TOPIC>",
+      "subscription": "<SUBSCRIPTION_NAME>",
+      "pushToken": "REPLACE_ME",
+      "hookUrl": "http://127.0.0.1:18789/hooks/gmail",
+      "includeBody": true,
+      "maxBytes": 20000,
+      "renewEveryMinutes": 720,
+      "serve": { "bind": "127.0.0.1", "port": 8788, "path": "/gmail-pubsub" },
+      "tailscale": { "mode": "funnel", "path": "/gmail-pubsub" }
+    }
+  }
+}

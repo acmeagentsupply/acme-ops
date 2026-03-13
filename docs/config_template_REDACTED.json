@@ -1,0 +1,127 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.3.1"
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:default": {
+        "provider": "anthropic",
+        "mode": "api_key",
+        "apiKey": "REPLACE_ME_ANTHROPIC_API_KEY"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-6",
+        "fallbacks": [
+          "google/gemini-2.5-flash-lite",
+          "openai/gpt-4-turbo"
+        ]
+      }
+    },
+    "list": [
+      {
+        "id": "hendrik",
+        "workspace": "/Users/REPLACE_ME_USERNAME/.openclaw/workspace",
+        "model": "anthropic/claude-sonnet-4-6"
+      },
+      {
+        "id": "heike",
+        "workspace": "/Users/REPLACE_ME_USERNAME/.openclaw/workspace/heike",
+        "model": "anthropic/claude-sonnet-4-6"
+      }
+    ]
+  },
+  "tools": {
+    "web": {
+      "search": { "enabled": true, "apiKey": "REPLACE_ME_BRAVE_API_KEY" },
+      "fetch": { "enabled": true }
+    }
+  },
+  "bindings": [
+    { "agentId": "hendrik", "match": { "channel": "webchat" } },
+    { "agentId": "heike",   "match": { "channel": "discord", "accountId": "heike" } },
+    { "agentId": "hendrik", "match": { "channel": "discord", "accountId": "hendrik" } }
+  ],
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "responsePrefix": "[Hendrik]",
+      "dmPolicy": "allowlist",
+      "selfChatMode": true,
+      "allowFrom": ["REPLACE_ME_YOUR_WHATSAPP_E164"],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
+    },
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "botToken": "REPLACE_ME_TELEGRAM_BOT_TOKEN",
+      "groupPolicy": "allowlist",
+      "streaming": "partial"
+    },
+    "discord": {
+      "enabled": true,
+      "groupPolicy": "allowlist",
+      "streaming": "off",
+      "defaultAccount": "hendrik",
+      "accounts": {
+        "hendrik": {
+          "enabled": true,
+          "token": "REPLACE_ME_HENDRIK_DISCORD_BOT_TOKEN",
+          "groupPolicy": "allowlist",
+          "streaming": "off",
+          "dmPolicy": "allowlist",
+          "allowFrom": ["REPLACE_ME_CHIP_DISCORD_USER_ID", "REPLACE_ME_HEIKE_BOT_ID", "REPLACE_ME_HENDRIK_BOT_ID"],
+          "intents": { "presence": false, "guildMembers": true },
+          "guilds": {
+            "REPLACE_ME_GUILD_ID": {
+              "users": ["REPLACE_ME_CHIP_DISCORD_USER_ID"]
+            }
+          }
+        },
+        "heike": {
+          "enabled": true,
+          "token": "REPLACE_ME_HEIKE_DISCORD_BOT_TOKEN",
+          "groupPolicy": "allowlist",
+          "streaming": "off",
+          "dmPolicy": "allowlist",
+          "allowFrom": ["REPLACE_ME_CHIP_DISCORD_USER_ID", "REPLACE_ME_HEIKE_BOT_ID", "REPLACE_ME_HENDRIK_BOT_ID"],
+          "intents": { "presence": false, "guildMembers": true },
+          "guilds": {
+            "REPLACE_ME_GUILD_ID": {
+              "users": ["REPLACE_ME_CHIP_DISCORD_USER_ID"]
+            }
+          }
+        }
+      }
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "channelHealthCheckMinutes": 60,
+    "auth": {
+      "mode": "password",
+      "password": "REPLACE_ME_GATEWAY_PASSWORD"
+    },
+    "tailscale": { "mode": "off" }
+  },
+  "plugins": {
+    "entries": {
+      "discord":  { "enabled": true },
+      "telegram": { "enabled": true },
+      "whatsapp": { "enabled": true }
+    }
+  }
+}

@@ -1,0 +1,69 @@
+# OS / macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# =========================
+# Editors / IDEs
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# Node / OpenClaw ecosystem
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.secret
+
+# OpenClaw sensitive locations
+.openclaw/
+**/auth-profiles.json
+**/credentials/
+**/tokens/
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+/tmp/
+
+# =========================
+# Watchdog runtime state (never commit)
+# =========================
+scripts/watchdog/stall_seen.txt
+scripts/watchdog/model_state.json
+scripts/watchdog/cadence_*.log
+scripts/watchdog/*.log
+*.sqlite
+**/*.sqlite
+
+# =========================
+# Build / temp
+# =========================
+dist/
+build/
+coverage/
+.cache/
+.tmp/
