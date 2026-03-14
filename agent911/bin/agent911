@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+# =============================================================================
+# AGENT911 RECONSTRUCTION — ALL PHASES FROZEN (Phase 1 + 2 + 3)
+# Do not modify reconstruct-diagnose, reconstruct-plan, reconstruct-execute,
+# reconstruct-restore, or reconstruct-rollback without explicit ARCH/OPS approval.
+# See: docs/control-plane/CONTROL_PLANE_FREEZE.md
+# =============================================================================
+"""Agent911 planner CLI."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path("/Users/AGENT/.openclaw/workspace/openclaw-ops")
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from agent911.planner.recovery_planner import build_plan, diagnose, save_plan
+from agent911.recovery.reconstruct_execute import execute_reconstruction_plan, load_reconstruction_plan
+from agent911.recovery.memory_recovery import load_latest_plan
+from agent911.recovery.restore_execute import run_restore_approve, run_restore_dry_run
+from agent911.recovery.rollback_engine import execute_rollback, load_latest_execution_record
+from agent911.recovery.state_reconstruction import run_reconstruct_diagnose, run_reconstruct_plan
+from agent911.system.rebuild import ensure_layout
+
+
+def _print_help() -> None:
+    print("Agent911")
+    print("")
+    print("Commands")
+    print("diagnose  inspect signals and classify incident")
+    print("plan      create recovery plan and persist under memory/incidents")
+    print("execute   safe execution stub (requires existing plan)")
+    print("rollback  safe rollback stub (requires existing plan)")
+    print("reconstruct-diagnose  inspect memory/doctrine/checkpoint integrity")
+    print("reconstruct-plan      create reconstruction plan (planning-only)")
+    print("reconstruct-execute   execute approved non-destructive reconstruction steps")
+    print("reconstruct-restore-dry-run  preview checkpoint restore actions")
+    print("reconstruct-restore-approve  execute approval-gated restore actions")
+    print("reconstruct-rollback         conservative rollback of latest restore execution")
+
+
+def _render_diagnosis(diag: dict) -> str:
+    lines = [
+        "Agent911 Diagnose",
+        "",
+        f"incident_type: {diag.get('incident_type', 'unknown')}",
+        f"confidence: {diag.get('confidence', 'unknown')}",
+        "",
+        "evidence:",
+    ]
+    for item in diag.get("evidence", []):
+        lines.append(f"- {item}")
+    lines.extend(
+        [
+            "",
+            "signals:",
+        ]
+    )
+    signals = diag.get("signals", {})
+    for key in ["telemetry_age_seconds", "tokens_last_5m", "alerts_last_15m", "gateway_state", "snapshot_ok", "recovery_ready"]:
+        lines.append(f"{key}: {signals.get(key, 'unknown')}")
+    return "\n".join(lines)
+
+
+def _render_plan(plan: dict, path: str) -> str:
+    lines = [
+        "Agent911 Plan",
+        "",
+        f"incident_type: {plan.get('incident_type', 'unknown')}",
+        f"confidence: {plan.get('confidence', 'unknown')}",
+        "",
+        "recommended_actions:",
+    ]
+    for action in plan.get("recommended_actions", []):
+        lines.append(f"- {action}")
+    lines.extend(["", "rollback_actions:"])
+    for action in plan.get("rollback_actions", []):
+        lines.append(f"- {action}")
+    lines.extend(["", f"plan_saved: {path}"])
+    return "\n".join(lines)
+
+
+def _render_reconstruct_diagnose(diag: dict) -> str:
+    doctrine_state = diag.get("doctrine_state", {})
+    memory_state = diag.get("memory_state", {})
+    checkpoint = diag.get("checkpoint_state", {})
+    detected = diag.get("detected_corruption", [])
+    best = checkpoint.get("best") or {}
+    lines = [
+        "Agent911 Reconstruct Diagnose",
+        "",
+        f"doctrine_status: {'drift' if doctrine_state.get('drift_detected') else 'ok'}",
+        f"memory_tree_status: {'invalid' if (memory_state.get('missing') or memory_state.get('malformed')) else 'ok'}",
+        f"checkpoint_availability: {checkpoint.get('count', 0)}",
+        "",
+        "detected_corruption:",
+    ]
+    if not detected:
+        lines.append("- none")
+    else:
+        for item in detected:
+            lines.append(f"- {item}")
+    if best:
+        lines.extend(
+            [
+                "",
+                f"best_checkpoint: {best.get('path', 'unknown')}",
+                f"best_checkpoint_score: {best.get('score', 'unknown')}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _render_reconstruct_plan(plan: dict, path: str) -> str:
+    lines = [
+        "Agent911 Reconstruct Plan",
+        "",
+        f"incident_type: {plan.get('incident_type', 'unknown')}",
+        f"confidence: {plan.get('confidence', 'unknown')}",
+        f"selected_checkpoint: {plan.get('selected_checkpoint', 'none')}",
+        "",
+        "reconstruction_steps:",
+    ]
+    for step in plan.get("reconstruction_steps", []):
+        lines.append(f"- {step}")
+    lines.extend(["", f"plan_saved: {path}"])
+    return "\n".join(lines)
+
+
+def _render_reconstruct_execute(summary: dict) -> str:
+    lines = [
+        "Agent911 Reconstruct Execute",
+        "",
+        f"plan_id: {summary.get('plan_id', 'unknown')}",
+        f"selected_checkpoint: {summary.get('selected_checkpoint', 'none')}",
+        f"pre_execution_snapshot: {'created' if (summary.get('pre_execution_snapshot') or {}).get('created') else 'failed'}",
+        "",
+        "step results:",
+    ]
+    for row in summary.get("step_results", []):
+        lines.append(f"- {row.get('key', 'unknown')}: {row.get('status', 'unknown')} ({row.get('notes', '')})")
+    lines.extend(["", f"status: {summary.get('status', 'unknown')}"])
+    return "\n".join(lines)
+
+
+def _render_reconstruct_restore_dry_run(summary: dict) -> str:
+    lines = [
+        "Agent911 Reconstruct Restore Dry Run",
+        "",
+        f"plan_id: {summary.get('plan_id', 'unknown')}",
+        f"selected_checkpoint: {summary.get('selected_checkpoint', 'none')}",
+        "",
+        "restoreable_assets:",
+    ]
+    for item in summary.get("restoreable_assets", []):
+        lines.append(f"- {item}")
+    lines.extend(["", "planned_steps:"])
+    for item in summary.get("planned_steps", []):
+        lines.append(f"- {item}")
+    lines.extend(["", f"status: {summary.get('status', 'unknown')}"])
+    return "\n".join(lines)
+
+
+def _render_reconstruct_restore_approve(summary: dict) -> str:
+    lines = [
+        "Agent911 Reconstruct Restore Approve",
+        "",
+        f"plan_id: {summary.get('plan_id', 'unknown')}",
+        f"selected_checkpoint: {summary.get('checkpoint_path', 'none')}",
+        f"pre_restore_snapshot: {'created' if (summary.get('pre_restore_snapshot') or {}).get('created') else 'failed'}",
+        "",
+        "step results:",
+    ]
+    for row in summary.get("step_results", []):
+        lines.append(f"- {row.get('step', 'unknown')}: {row.get('status', 'unknown')} ({row.get('notes', '')})")
+    lines.extend(["", f"status: {summary.get('status', 'unknown')}"])
+    return "\n".join(lines)
+
+
+def _render_reconstruct_rollback(summary: dict) -> str:
+    lines = [
+        "Agent911 Reconstruct Rollback",
+        "",
+        f"execution_record: {summary.get('execution_record', 'unknown')}",
+        "rollback_steps:",
+    ]
+    for row in summary.get("step_results", []):
+        lines.append(f"- {row.get('step', 'unknown')}: {row.get('status', 'unknown')} ({row.get('notes', '')})")
+    lines.extend(["", f"status: {summary.get('status', 'unknown')}"])
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("command", nargs="?")
+    parser.add_argument("plan_path", nargs="?")
+    args = parser.parse_args()
+
+    command = (args.command or "").strip().lower()
+    ensure_layout()
+
+    if command in {"", "help", "-h", "--help"}:
+        _print_help()
+        return 0
+
+    if command == "diagnose":
+        diag = diagnose()
+        print(_render_diagnosis(diag))
+        return 0
+
+    if command == "plan":
+        diag = diagnose()
+        plan = build_plan(diag)
+        saved = save_plan(plan)
+        print(_render_plan(plan, str(saved)))
+        return 0
+
+    if command == "execute":
+        plan = load_latest_plan()
+        if not plan:
+            print("Agent911 Execute\n\nNo plan found. Run `agent911 plan` first.")
+            return 1
+        print("Agent911 Execute\n\nSafety mode: no destructive actions executed in this pass.")
+        print(f"latest_plan: {plan.get('_path', 'unknown')}")
+        print("next_step: operator approval required before action layer is enabled")
+        return 0
+
+    if command == "rollback":
+        plan = load_latest_plan()
+        if not plan:
+            print("Agent911 Rollback\n\nNo plan found. Run `agent911 plan` first.")
+            return 1
+        print("Agent911 Rollback\n\nSafety mode: rollback actions listed but not executed.")
+        print(f"latest_plan: {plan.get('_path', 'unknown')}")
+        for item in plan.get("rollback_actions", []):
+            print(f"- {item}")
+        return 0
+
+    if command == "reconstruct-diagnose":
+        diag = run_reconstruct_diagnose(agent_id="main")
+        print(_render_reconstruct_diagnose(diag))
+        return 0
+
+    if command == "reconstruct-plan":
+        plan = run_reconstruct_plan(agent_id="main")
+        saved = save_plan(plan)
+        print(_render_reconstruct_plan(plan, str(saved)))
+        return 0
+
+    if command == "reconstruct-execute":
+        try:
+            plan = load_reconstruction_plan(plan_path=args.plan_path)
+            summary = execute_reconstruction_plan(plan)
+            print(_render_reconstruct_execute(summary))
+            return 0 if summary.get("status") == "success" else 1
+        except Exception as exc:
+            print("Agent911 Reconstruct Execute")
+            print("")
+            print(f"status: failed ({exc})")
+            return 1
+
+    if command == "reconstruct-restore-dry-run":
+        try:
+            summary = run_restore_dry_run(plan_path=args.plan_path)
+            print(_render_reconstruct_restore_dry_run(summary))
+            return 0
+        except Exception as exc:
+            print("Agent911 Reconstruct Restore Dry Run")
+            print("")
+            print(f"status: failed ({exc})")
+            return 1
+
+    if command == "reconstruct-restore-approve":
+        try:
+            summary = run_restore_approve(plan_path=args.plan_path)
+            print(_render_reconstruct_restore_approve(summary))
+            return 0 if summary.get("status") in {"success", "partial_success"} else 1
+        except Exception as exc:
+            print("Agent911 Reconstruct Restore Approve")
+            print("")
+            print(f"status: failed ({exc})")
+            return 1
+
+    if command == "reconstruct-rollback":
+        try:
+            execution = load_latest_execution_record()
+            if not execution:
+                print("Agent911 Reconstruct Rollback\n\nstatus: failed (no restore execution record found)")
+                return 1
+            summary = execute_rollback(execution)
+            print(_render_reconstruct_rollback(summary))
+            return 0 if summary.get("status") in {"success", "partial_success"} else 1
+        except Exception as exc:
+            print("Agent911 Reconstruct Rollback")
+            print("")
+            print(f"status: failed ({exc})")
+            return 1
+
+    _print_help()
+    print(f"\nUnknown command: {command}")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
