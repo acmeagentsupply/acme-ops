@@ -1,9 +1,12 @@
 """
-Transmission v1 — Deterministic Model Routing
+Transmission v2 — Cognitive Execution Router with Policy Resolver
 Arch/Ops Approved Build Packet 2026-03-15
 
-Routes tasks to the appropriate AI model based on work_class classification,
-lane preference, model capabilities, and execution config masking.
+v1: Deterministic routing by work_class, lane preference, capability masking.
+v2: Activates Policy Resolver — optional read-only Hypnos and Recall state signals.
+
+Policy signals are optional. If absent, unreadable, or malformed, Transmission
+behaves exactly like v1. No blocking runtime dependencies.
 
 Zero writes to openclaw.json. Read-only. Deterministic. Observable.
 Target: p95 routing latency < 10ms (heuristic path).
@@ -15,7 +18,6 @@ import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -43,8 +45,11 @@ EXECUTION_DEFAULTS: dict[str, dict] = {
 
 TIER_ORDER = ["premium", "budget-capable", "mid", "efficient"]
 
-DEFAULT_CONFIG_PATH = Path.home() / ".openclaw" / "watchdog" / "transmission_config.json"
-DEFAULT_LOG_PATH    = Path.home() / ".openclaw" / "watchdog" / "transmission_events.log"
+DEFAULT_CONFIG_PATH       = Path.home() / ".openclaw" / "watchdog" / "transmission_config.json"
+DEFAULT_LOG_PATH          = Path.home() / ".openclaw" / "watchdog" / "transmission_events.log"
+DEFAULT_HYPNOS_STATE_PATH = Path.home() / ".openclaw" / "watchdog" / "hypnos_state.json"
+DEFAULT_RECALL_STATE_PATH = Path.home() / ".openclaw" / "watchdog" / "recall_state.json"
+DEFAULT_OPS_EVENTS_PATH   = Path.home() / ".openclaw" / "watchdog" / "ops_events.ndjson"
 
 # ---------------------------------------------------------------------------
 # LRU Classification Cache
@@ -95,6 +100,264 @@ def _load_config(config_path: Optional[Path] = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# v2: Policy State Loaders (mtime-cached, same discipline as config)
+# ---------------------------------------------------------------------------
+
+_hypnos_state_cache: dict = {}
+_hypnos_state_mtime: float = 0.0
+_recall_state_cache: dict = {}
+_recall_state_mtime: float = 0.0
+
+
+def _read_hypnos_state(
+    path: Optional[Path] = None,
+    log_path: Optional[Path] = None,
+    req_id: str = "",
+) -> dict:
+    """
+    Load Hypnos routing projection. Cached; reloads only on file mtime change.
+    Returns {} if file absent, unreadable, or malformed — never raises.
+    """
+    global _hypnos_state_cache, _hypnos_state_mtime
+    p = Path(path) if path else DEFAULT_HYPNOS_STATE_PATH
+    try:
+        mtime = p.stat().st_mtime
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+    if mtime == _hypnos_state_mtime and _hypnos_state_cache:
+        return _hypnos_state_cache
+    try:
+        with open(p) as f:
+            data = json.load(f)
+        _hypnos_state_cache = data
+        _hypnos_state_mtime = mtime
+        return data
+    except Exception as e:
+        # Malformed — emit error, discard, fallback to v1
+        if log_path and req_id:
+            _emit("TRANSMISSION_POLICY_ERROR", req_id, log_path,
+                  source="hypnos", error=str(e))
+        _hypnos_state_cache = {}
+        _hypnos_state_mtime = mtime  # remember mtime so we don't retry on every call
+        return {}
+
+
+def _read_recall_state(
+    path: Optional[Path] = None,
+    log_path: Optional[Path] = None,
+    req_id: str = "",
+) -> dict:
+    """
+    Load Recall recovery projection. Cached; reloads only on file mtime change.
+    Returns {} if file absent, unreadable, or malformed — never raises.
+    """
+    global _recall_state_cache, _recall_state_mtime
+    p = Path(path) if path else DEFAULT_RECALL_STATE_PATH
+    try:
+        mtime = p.stat().st_mtime
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+    if mtime == _recall_state_mtime and _recall_state_cache:
+        return _recall_state_cache
+    try:
+        with open(p) as f:
+            data = json.load(f)
+        _recall_state_cache = data
+        _recall_state_mtime = mtime
+        return data
+    except Exception as e:
+        if log_path and req_id:
+            _emit("TRANSMISSION_POLICY_ERROR", req_id, log_path,
+                  source="recall", error=str(e))
+        _recall_state_cache = {}
+        _recall_state_mtime = mtime
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# v2: Policy Resolver — Recall Restrictions
+# ---------------------------------------------------------------------------
+
+def _apply_recall_restrictions(
+    chain: list[str],
+    recall_state: dict,
+    agent_id: Optional[str],
+    models: dict,
+) -> tuple[list[str], bool]:
+    """
+    Apply Recall recovery routing constraints to the candidate chain.
+
+    Restriction levels:
+    - scope=global OR (scope=agent_subset AND agent in affected_agents):
+        STRONG — remove efficient tier, deprioritize premium (move to end)
+    - scope=agent_subset AND agent NOT in affected_agents:
+        MILD — deprioritize premium only; efficient stays
+
+    Missing scope defaults to "global" (safer posture).
+    Returns (modified_chain, policy_applied).
+    """
+    if not recall_state.get("in_recovery"):
+        return chain, False
+
+    scope = recall_state.get("scope", "global")  # absent → global (safer default)
+    affected = recall_state.get("affected_agents", [])
+    agent_is_affected = bool(agent_id and agent_id in affected)
+
+    strong = (scope == "global") or (scope == "agent_subset" and agent_is_affected)
+    mild   = (scope == "agent_subset" and not agent_is_affected)
+
+    modified = list(chain)
+    policy_applied = False
+
+    if strong:
+        # Remove efficient tier entirely
+        before = len(modified)
+        modified = [m for m in modified if models.get(m, {}).get("tier") != "efficient"]
+        if len(modified) < before:
+            policy_applied = True
+        # Deprioritize premium: move to end of chain
+        premium     = [m for m in modified if models.get(m, {}).get("tier") == "premium"]
+        non_premium = [m for m in modified if models.get(m, {}).get("tier") != "premium"]
+        if premium and non_premium:
+            modified = non_premium + premium
+            policy_applied = True
+
+    elif mild:
+        # Deprioritize premium only — efficient stays
+        premium     = [m for m in modified if models.get(m, {}).get("tier") == "premium"]
+        non_premium = [m for m in modified if models.get(m, {}).get("tier") != "premium"]
+        if premium and non_premium:
+            modified = non_premium + premium
+            policy_applied = True
+
+    return modified, policy_applied
+
+
+# ---------------------------------------------------------------------------
+# v2: Policy Resolver — Hypnos Restrictions
+# ---------------------------------------------------------------------------
+
+def _apply_hypnos_restrictions(
+    chain: list[str],
+    hypnos_state: dict,
+    models: dict,
+    required_features: Optional[dict],
+) -> tuple[list[str], bool]:
+    """
+    Apply Hypnos governance constraints to the candidate chain.
+
+    Applied in order:
+    1. denied_providers  — hard exclude
+    2. force_tier        — keep only specified tier
+    3. cost_hold         — reorder: budget-capable/efficient first
+    4. required_features — merge with caller's feature requirements
+    5. preferred_tiers   — reorder: listed tiers first
+
+    Returns (modified_chain, policy_applied).
+    """
+    if not hypnos_state.get("active"):
+        return chain, False
+
+    routing = hypnos_state.get("routing", {})
+    modified = list(chain)
+    policy_applied = False
+
+    # 1. denied_providers: hard exclude
+    denied = routing.get("denied_providers", [])
+    if denied:
+        before = len(modified)
+        modified = [m for m in modified if models.get(m, {}).get("provider") not in denied]
+        if len(modified) < before:
+            policy_applied = True
+
+    # 2. force_tier: keep only that tier
+    force_tier = routing.get("force_tier")
+    if force_tier:
+        before = len(modified)
+        modified = [m for m in modified if models.get(m, {}).get("tier") == force_tier]
+        if len(modified) < before:
+            policy_applied = True
+
+    # 3. cost_hold: prefer budget-capable and efficient (reorder)
+    if routing.get("cost_hold"):
+        cheap = [m for m in modified if models.get(m, {}).get("tier") in ("budget-capable", "efficient")]
+        mid   = [m for m in modified if models.get(m, {}).get("tier") == "mid"]
+        prem  = [m for m in modified if models.get(m, {}).get("tier") == "premium"]
+        if cheap and (mid or prem):
+            modified = cheap + mid + prem
+            policy_applied = True
+
+    # 4. required_features (from Hypnos routing): merge-filter with caller features
+    hypnos_feats = routing.get("required_features", {})
+    all_feats = dict(required_features or {})
+    all_feats.update({k: v for k, v in hypnos_feats.items() if v})
+    if all_feats:
+        before = len(modified)
+        filtered = []
+        for m in modified:
+            mcfg = models.get(m, {})
+            if all(mcfg.get(feat, False) for feat, val in all_feats.items() if val):
+                filtered.append(m)
+        modified = filtered
+        if len(modified) < before:
+            policy_applied = True
+
+    # 5. preferred_tiers: bring listed tiers to front
+    preferred = routing.get("preferred_tiers", [])
+    if preferred:
+        front = [m for m in modified if models.get(m, {}).get("tier") in preferred]
+        back  = [m for m in modified if models.get(m, {}).get("tier") not in preferred]
+        if front and back:
+            modified = front + back
+            policy_applied = True
+
+    return modified, policy_applied
+
+
+# ---------------------------------------------------------------------------
+# v2: Ops Event Emitter (best-effort, never blocks routing)
+# ---------------------------------------------------------------------------
+
+def _emit_ops_event(
+    req_id: str,
+    model: str,
+    work_class: str,
+    gear: str,
+    policy_active: bool,
+    recovery_context: bool,
+    duration_ms: float,
+    ops_path: Optional[Path] = None,
+) -> None:
+    """
+    Emit condensed routing event to shared stack event bus.
+    Best-effort append only. Never raises. Never blocks routing.
+    """
+    try:
+        path = Path(ops_path) if ops_path else DEFAULT_OPS_EVENTS_PATH
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "source": "transmission",
+            "event": "ROUTE",
+            "req_id": req_id,
+            "model": model,
+            "work_class": work_class,
+            "gear": gear,
+            "policy_active": policy_active,
+            "recovery_context": recovery_context,
+            "duration_ms": duration_ms,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass  # best-effort — ops bus failure must never fail routing
+
+
+# ---------------------------------------------------------------------------
 # Event Logger
 # ---------------------------------------------------------------------------
 
@@ -118,8 +381,6 @@ def _classify_heuristic(prompt: str, work_classes: list[str]) -> tuple[str, floa
     """
     Returns (work_class, confidence, source).
     confidence = hits_for_winner / len(pattern_list_for_winner)
-    Ties broken by lane preference (handled upstream) then quality_score.
-    Here we return the winner and confidence; tie-breaking by tier is upstream.
     """
     prompt_lower = prompt.lower()
     hits: dict[str, int] = {}
@@ -134,9 +395,8 @@ def _classify_heuristic(prompt: str, work_classes: list[str]) -> tuple[str, floa
 
     max_hits = max(hits.values())
     winners = [wc for wc, h in hits.items() if h == max_hits]
-    winner = winners[0]  # tie-breaking by order (resolved upstream by lane pref)
+    winner = winners[0]
 
-    # Confidence = hits / max possible for that class
     max_possible = len(WORK_CLASS_PATTERNS.get(winner, []))
     confidence = max_hits / max_possible if max_possible > 0 else 0.0
 
@@ -163,11 +423,8 @@ def _build_candidate_chain(
     gear_up: bool,
 ) -> list[str]:
     """
-    Build ordered candidate list:
-    1. enabled=True AND work_class in capabilities
-    2. required_features filter
-    3. Sort by lane preference tier, quality_score DESC, cost_weight ASC, latency ASC
-    4. If gear_up: suppress lowest-tier candidates (shift one tier up)
+    Build ordered candidate list (v1 logic — unchanged in v2).
+    Policy Resolver is applied separately after this step.
     """
     lane_prefs: list[str] = lane_preferences.get(lane, TIER_ORDER)
 
@@ -190,7 +447,7 @@ def _build_candidate_chain(
     if not candidates:
         return []
 
-    # If gear_up: drop candidates at the lowest tier present
+    # gear_up: drop lowest-tier candidates
     if gear_up and len(candidates) > 1:
         tiers_present = sorted(
             set(_tier_rank(c[1].get("tier", ""), lane_prefs) for c in candidates)
@@ -215,7 +472,6 @@ def _build_candidate_chain(
 
 def _build_execution_config(work_class: str, model_cfg: dict) -> dict:
     defaults = dict(EXECUTION_DEFAULTS.get(work_class, EXECUTION_DEFAULTS["simple"]))
-    # Capability masking
     if not model_cfg.get("tool_calling", False):
         defaults["tool_calling"] = False
     if not model_cfg.get("structured_output", False):
@@ -236,16 +492,32 @@ def route_with_transmission(
     lane: str = "interactive",
     req_id: Optional[str] = None,
     required_features: Optional[dict] = None,
+    agent_id: Optional[str] = None,
     config_path: Optional[str] = None,
     log_path: Optional[str] = None,
+    hypnos_state_path: Optional[str] = None,
+    recall_state_path: Optional[str] = None,
+    ops_events_path: Optional[str] = None,
 ) -> dict:
     """
     Route a task to the most appropriate model.
 
-    Returns a dict with: model, provider, candidate_chain, work_class,
-    confidence, classifier_source, execution_config, gear, duration_ms, req_id.
+    v2 resolver sequence (6 steps):
+      1. Build candidate chain using v1 logic
+      2. Apply Recall recovery restrictions
+      3. Apply Hypnos governance restrictions
+      4. Re-rank remaining candidates (order preserved from steps 2-3)
+      5. Emit TRANSMISSION_POLICY_REDUCED if chain changed
+      6. Select first candidate
 
-    On total failure, returns status="EXHAUSTED" with TRANSMISSION_EXHAUSTED emitted.
+    Policy Resolver is activated only when state files are present.
+    If both files are absent: identical behavior to v1.
+
+    Returns dict with: model, provider, candidate_chain, work_class,
+    confidence, classifier_source, execution_config, gear, duration_ms,
+    req_id, policy_active, recovery_context.
+
+    On total failure: status="EXHAUSTED" with TRANSMISSION_EXHAUSTED emitted.
     Never raises. Never writes to openclaw.json.
     """
     t0 = time.perf_counter()
@@ -262,12 +534,11 @@ def route_with_transmission(
     })
     gear_up_on_low: bool = cfg.get("defaults", {}).get("gear_up_on_low_confidence", True)
 
-    # --- Step 1: Resolve work_class ---
+    # --- Resolve work_class ---
     resolved_wc: str = ""
     confidence: float = 1.0
     classifier_source: str = "default"
 
-    # Priority 1: Dispatch hint (only if valid)
     if dispatch_hint and isinstance(dispatch_hint, dict):
         dh_wc = dispatch_hint.get("work_class", "")
         if dh_wc and dh_wc in work_classes:
@@ -275,13 +546,11 @@ def route_with_transmission(
             classifier_source = "dispatch"
             confidence = 1.0
 
-    # Priority 2: Explicit parameter
     if not resolved_wc and work_class and work_class in work_classes:
         resolved_wc = work_class
         classifier_source = "explicit"
         confidence = 1.0
 
-    # Priority 3: Agent metadata
     if not resolved_wc and agent_metadata and isinstance(agent_metadata, dict):
         am_wc = agent_metadata.get("work_class", "")
         if am_wc and am_wc in work_classes:
@@ -289,7 +558,6 @@ def route_with_transmission(
             classifier_source = "agent_metadata"
             confidence = 1.0
 
-    # Priority 4: Heuristic classifier (with cache)
     if not resolved_wc:
         cache_key = prompt[:200]
         cached = _classification_cache.get(cache_key) if _classification_cache else None
@@ -300,10 +568,7 @@ def route_with_transmission(
             if _classification_cache and resolved_wc:
                 _classification_cache.put(cache_key, (resolved_wc, confidence, classifier_source))
 
-    # Priority 5: Lane default
     if not resolved_wc:
-        lane_prefs = lane_preferences.get(lane, ["premium", "mid", "efficient"])
-        # Default: pick work_class appropriate for the tier default
         resolved_wc = "simple"
         classifier_source = "lane_default"
         confidence = 0.0
@@ -311,14 +576,12 @@ def route_with_transmission(
     _emit("TRANSMISSION_WORK_CLASS_RESOLVED", req_id, _log, work_class=resolved_wc, source=classifier_source)
     _emit("TRANSMISSION_CONFIDENCE", req_id, _log, confidence=round(confidence, 3), threshold=confidence_threshold)
 
-    # --- Step 2: Determine gear_up ---
     gear_up = gear_up_on_low and confidence < confidence_threshold
 
-    # --- Step 3: Build candidate chain ---
+    # --- Step 1: Build candidate chain (v1 logic) ---
     candidate_chain = _build_candidate_chain(
         resolved_wc, lane, models, lane_preferences, required_features, gear_up
     )
-
     _emit("TRANSMISSION_CHAIN_BUILT", req_id, _log,
           candidates=candidate_chain, work_class=resolved_wc, gear_up=gear_up)
 
@@ -333,24 +596,87 @@ def route_with_transmission(
             "duration_ms": round((time.perf_counter() - t0) * 1000, 2),
         }
 
-    selected_model = candidate_chain[0]
+    # --- Steps 2-5: Policy Resolver ---
+    _h_path = Path(hypnos_state_path) if hypnos_state_path else None
+    _r_path = Path(recall_state_path) if recall_state_path else None
+    _ops_path = Path(ops_events_path) if ops_events_path else None
+
+    recall_state  = _read_recall_state(_r_path, _log, req_id)
+    hypnos_state  = _read_hypnos_state(_h_path, _log, req_id)
+
+    policy_chain = list(candidate_chain)
+    policy_applied = False
+    recovery_context = False
+
+    # Step 2: Apply Recall restrictions
+    policy_chain, recall_applied = _apply_recall_restrictions(
+        policy_chain, recall_state, agent_id, models
+    )
+    if recall_applied:
+        policy_applied = True
+        recovery_context = True
+
+    # Step 3: Apply Hypnos restrictions
+    policy_chain, hypnos_applied = _apply_hypnos_restrictions(
+        policy_chain, hypnos_state, models, required_features
+    )
+    if hypnos_applied:
+        policy_applied = True
+
+    # Step 4: Re-rank remaining candidates (order is preserved from steps 2-3;
+    # within each policy tier the v1 relative order is already correct)
+
+    # Step 5: Emit TRANSMISSION_POLICY_REDUCED if chain changed
+    if policy_applied:
+        _emit("TRANSMISSION_POLICY_REDUCED", req_id, _log,
+              original=candidate_chain, reduced=policy_chain,
+              recall_applied=recall_applied, hypnos_applied=hypnos_applied)
+
+    # Exhaustion after policy filtering
+    if not policy_chain:
+        _emit("TRANSMISSION_EXHAUSTED", req_id, _log,
+              reason="policy_exhausted", work_class=resolved_wc,
+              policy_active=True)
+        return {
+            "status": "EXHAUSTED",
+            "reason": "policy_exhausted",
+            "work_class": resolved_wc,
+            "req_id": req_id,
+            "policy_active": True,
+            "duration_ms": round((time.perf_counter() - t0) * 1000, 2),
+        }
+
+    # Step 6: Select first candidate
+    selected_model = policy_chain[0]
     model_cfg = models[selected_model]
     gear = model_cfg.get("tier", "unknown")
 
     _emit("TRANSMISSION_GEAR_SELECTED", req_id, _log,
           model=selected_model, gear=gear, lane=lane)
 
-    # --- Step 4: Build execution config (with capability masking) ---
+    # Execution config with capability masking (v1 unchanged)
     execution_config = _build_execution_config(resolved_wc, model_cfg)
     _emit("TRANSMISSION_EXECUTION_CONFIG", req_id, _log, execution_config=execution_config)
 
     duration_ms = round((time.perf_counter() - t0) * 1000, 2)
     _emit("TRANSMISSION_SUCCESS", req_id, _log, duration_ms=duration_ms, model=selected_model)
 
+    # Ops bus emission (best-effort, never blocks)
+    _emit_ops_event(
+        req_id=req_id,
+        model=selected_model,
+        work_class=resolved_wc,
+        gear=gear,
+        policy_active=policy_applied,
+        recovery_context=recovery_context,
+        duration_ms=duration_ms,
+        ops_path=_ops_path,
+    )
+
     return {
         "model": selected_model,
         "provider": model_cfg.get("provider", ""),
-        "candidate_chain": candidate_chain,
+        "candidate_chain": policy_chain,
         "work_class": resolved_wc,
         "confidence": round(confidence, 3),
         "classifier_source": classifier_source,
@@ -358,6 +684,8 @@ def route_with_transmission(
         "gear": gear,
         "duration_ms": duration_ms,
         "req_id": req_id,
+        "policy_active": policy_applied,
+        "recovery_context": recovery_context,
     }
 
 
