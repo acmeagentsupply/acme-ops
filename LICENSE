@@ -1,0 +1,102 @@
+# ACME Agent Supply Co. — ACME Freeware License
+**Version 1.0 | Effective: March 24, 2026**
+
+---
+
+## Covered Software
+
+This license applies to all ACME Agent Supply Co. freeware tools, including but not limited to:
+
+- **RadCheck** — Diagnostic scoring layer for agent deployments
+- **acme-speedtest** — Model health benchmark and rate limit intelligence CLI
+- Any future ACME freeware product that references this license
+
+Collectively referred to below as "the Software."
+
+---
+
+## Grant of Use
+
+ACME Agent Supply Co. ("ACME") grants you a free, non-exclusive, non-transferable, revocable license to **download, install, and run the Software** for any personal or commercial purpose, at no charge.
+
+That's the whole grant. You may run it. You may not do anything else described in the restrictions below.
+
+---
+
+## What You May Do
+
+- Run the Software on any machine you own or operate
+- Use the Software's output — scores, reports, diagnostics, benchmark results — for any purpose, including commercial agent operations
+- Share your results with others
+
+---
+
+## What You May Not Do
+
+You may **not**:
+
+1. **Redistribute** — You may not copy, package, redistribute, or make the Software available for download through any channel other than ACME's official distribution.
+
+2. **Resell** — You may not sell, sublicense, rent, or charge others for access to the Software or any product or service that bundles the Software.
+
+3. **Compete** — You may not use the Software, its source code, binary output, algorithms, diagnostic logic, scoring methodology, benchmark logic, or any portion thereof to build, train, or improve a product or service that competes with the Software or any ACME product.
+
+4. **Reverse engineer** — You may not decompile, disassemble, reverse engineer, or attempt to extract the source code from the Software's distributed binaries or scripts.
+
+5. **Misrepresent origin** — You may not remove, alter, or obscure any copyright, trademark, or attribution notice in the Software.
+
+---
+
+## No Source Provided
+
+The Software is distributed as binaries and/or shell scripts. **No source code is provided.** Nothing in this license grants you any right to source code.
+
+---
+
+## Ownership
+
+ACME retains all right, title, and interest in and to the Software, including all intellectual property rights. This license does not transfer any ownership interest to you.
+
+---
+
+## No Warranty
+
+The Software is provided **"as is"** without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, or non-infringement. ACME does not warrant that the Software will be error-free or that its output is accurate for any particular system.
+
+---
+
+## Limitation of Liability
+
+To the maximum extent permitted by applicable law, ACME shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from your use or inability to use the Software, even if ACME has been advised of the possibility of such damages.
+
+---
+
+## Termination
+
+This license terminates automatically if you breach any of its terms. Upon termination, you must delete all copies of the Software in your possession.
+
+---
+
+## Governing Law
+
+This license is governed by the laws of the Commonwealth of Massachusetts, without regard to conflict-of-law principles.
+
+---
+
+## Contact
+
+ACME Agent Supply Co.
+support@acmeagentsupply.com
+https://acmeagentsupply.com
+
+---
+
+*© 2026 ACME Agent Supply Co. All rights reserved.*
+
+---
+
+## Version History
+
+| Version | Date | Change |
+|---------|------|--------|
+| 1.0 | 2026-03-24 | Initial release — expanded from RadCheck-only to cover all ACME freeware tools (RadCheck, acme-speedtest, and future additions) |
