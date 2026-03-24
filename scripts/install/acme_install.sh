@@ -13,8 +13,8 @@ set -euo pipefail
 # Paths
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"          # workspace root
-SCRIPTS_ROOT="${REPO_ROOT}/openclaw-ops/scripts"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"             # acme-ops repo root
+SCRIPTS_ROOT="${REPO_ROOT}/scripts"
 
 WATCHDOG_DIR="${HOME}/.openclaw/watchdog"
 BIN_DIR="${HOME}/.openclaw/bin"
