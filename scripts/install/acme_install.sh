@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ACME Install Helper v0.2  —  A-INSTALL-V0-001 / A-INSTALL-V0-002
+# ACME Install Helper v0.3  —  A-INSTALL-V0-001 / A-INSTALL-V0-002
 # Bundle installer for ACME Agent Supply Co. products
 # Compatible: bash 3.2+ (macOS default)
 # =============================================================================
@@ -31,7 +31,7 @@ BUNDLE=""
 DRY_RUN=false
 APPLY=false
 VERIFY=false
-SCRIPT_VERSION="0.2.0"
+SCRIPT_VERSION="0.3.0"
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -76,20 +76,16 @@ sha256_file() {
     elif command -v sha256sum >/dev/null 2>&1; then
         sha256sum "${f}" | awk '{print $1}'
     else
-        # Fallback: md5 (weaker but always present on macOS)
         md5 -q "${f}" 2>/dev/null || md5sum "${f}" | awk '{print $1}'
     fi
 }
 
 # ---------------------------------------------------------------------------
 # Lock file helpers
-# Lock file format: flat JSON  {"module_rel_path": {"sha256":"...","installed_at":"...","version":"..."}}
 # ---------------------------------------------------------------------------
 lockfile_get_sha() {
-    # Return sha256 for a given dst_rel from lockfile; empty string if not found
     local dst_rel="$1"
     if [[ ! -f "${LOCK_FILE}" ]]; then echo ""; return; fi
-    # Simple grep-based extraction (no jq required)
     python3 -c "
 import json,sys
 try:
@@ -101,7 +97,6 @@ except:
 }
 
 lockfile_update() {
-    # Update/add one entry in the lockfile
     local dst_rel="$1"
     local sha256="$2"
     local version="$3"
@@ -125,6 +120,13 @@ PYEOF
 
 # ---------------------------------------------------------------------------
 # Product file manifest — returns "src_rel:dst_rel[:x]" (x = needs exec bit)
+#
+# v0.3 changes:
+#   sentinel  — updated to Transmission v2 layout:
+#               Path 1: scripts/sentinel/ (attach bridge + funnel alignment)
+#               Path 2: scripts/watchdog/ (predictive guard + compaction stack)
+#   sphinxgate — REMOVED from --bundle all; policy layer ships inside Sentinel.
+#                Standalone bundle coming soon.
 # ---------------------------------------------------------------------------
 bundle_files() {
     local product="$1"
@@ -134,15 +136,22 @@ bundle_files() {
             echo "radiation/radcheck_scoring_v2.py:radcheck_scoring_v2.py"
             ;;
         sentinel)
+            # Path 1 — attachment detection + funnel alignment (scripts/sentinel/)
+            echo "sentinel/sentinel_attach_bridge.py:sentinel_attach_bridge.py"
+            echo "sentinel/sentinel_funnel_alignment.py:sentinel_funnel_alignment.py"
+            # Path 2 — predictive guard + compaction stack (scripts/watchdog/)
+            echo "watchdog/sentinel_predictive_guard.py:sentinel_predictive_guard.py"
             echo "watchdog/silence_sentinel.py:silence_sentinel.py"
             echo "watchdog/sentinel_protection_emitter.py:sentinel_protection_emitter.py"
-            echo "watchdog/sentinel_predictive_guard.py:sentinel_predictive_guard.py"
             echo "watchdog/compaction_log_parser.py:compaction_log_parser.py"
             echo "watchdog/compaction_budget_sentinel.py:compaction_budget_sentinel.py"
             echo "watchdog/hendrik_watchdog.sh:hendrik_watchdog.sh:x"
             ;;
         sphinxgate)
-            echo "watchdog/model_router.py:model_router.py"
+            # SphinxGate v1 ships as part of the Sentinel bundle (model_router policy layer).
+            # Standalone installable artifact coming in a future release.
+            # This bundle intentionally produces 0 files — install succeeds with SKIPPED=0, FAILED=0.
+            echo "# SphinxGate standalone: coming soon — included in Sentinel bundle" > /dev/null
             ;;
         agent911)
             echo "agent911/agent911_snapshot.py:agent911_snapshot.py"
@@ -157,7 +166,7 @@ bundle_files() {
 }
 
 # ---------------------------------------------------------------------------
-# Agent911 state probe — returns field value from agent911_state.json
+# Agent911 state probe
 # ---------------------------------------------------------------------------
 a911_field() {
     local field="$1"
@@ -183,10 +192,12 @@ Usage: $(basename "$0") --bundle <name> [--dry-run | --apply | --verify]
 
 Bundles:
   radcheck    RadCheck scoring engine
-  sentinel    Sentinel stack (watchdog + protection + compaction)
-  sphinxgate  SphinxGate routing (model_router)
+  sentinel    Sentinel stack (attach bridge + funnel alignment + compaction guard)
+              Note: SphinxGate policy layer is included in this bundle.
   agent911    Agent911 control plane (snapshot + FMA + weekly report)
-  all         All of the above
+  all         All of the above (radcheck + sentinel + agent911)
+
+  sphinxgate  [Coming soon as standalone — currently ships inside sentinel bundle]
 
 Modes (mutually exclusive):
   --dry-run   Print planned actions without writing files (default)
@@ -248,8 +259,16 @@ case "${BUNDLE}" in
         ;;
 esac
 
+# v0.3: sphinxgate standalone produces no files — warn and exit cleanly
+if [[ "${BUNDLE}" == "sphinxgate" ]]; then
+    log_info "SphinxGate standalone bundle: coming soon."
+    log_info "SphinxGate policy layer is currently included in the Sentinel bundle."
+    log_info "Run: ./acme_install.sh --bundle sentinel --apply"
+    exit 0
+fi
+
 if [[ "${BUNDLE}" == "all" ]]; then
-    SELECTED_BUNDLES="radcheck sentinel sphinxgate agent911"
+    SELECTED_BUNDLES="radcheck sentinel agent911"
 else
     SELECTED_BUNDLES="${BUNDLE}"
 fi
@@ -265,7 +284,7 @@ SKIPPED_COUNT=0
 FAILED_COUNT=0
 INSTALLED_LIST=""
 
-# Verify result storage (parallel lists, bash 3.2 compatible)
+# Verify result storage
 VFY_BUNDLES=""
 VFY_INSTALLED=""
 VFY_WIRED=""
@@ -299,7 +318,6 @@ install_file() {
         return
     fi
 
-    # --- Lockfile-based idempotency check ---
     local src_sha
     src_sha="$(sha256_file "${src}")"
     local lock_sha
@@ -312,17 +330,14 @@ install_file() {
         return
     fi
 
-    # Fallback cmp check (file present but not in lockfile yet)
     if [[ -f "${dst}" && -z "${lock_sha}" ]] && cmp -s "${src}" "${dst}"; then
         log_skip "already current (content match): ${dst_rel}"
         SKIPPED_COUNT=$((SKIPPED_COUNT+1))
-        # Add to lockfile retroactively
         lockfile_update "${dst_rel}" "${src_sha}" "${SCRIPT_VERSION}" "$(ts)"
         emit_event "INSTALL_STEP" "product=${product}" "dst=${dst_rel}" "result=ALREADY_CURRENT_RETROLOCK" "sha256=${src_sha}"
         return
     fi
 
-    # Backup existing
     mkdir -p "$(dirname "${dst}")"
     if [[ -f "${dst}" ]]; then
         local bak="${dst}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
@@ -332,13 +347,11 @@ install_file() {
 
     cp "${src}" "${dst}"
 
-    # Set executable bit if required
     if [[ "${needs_exec}" == "x" ]]; then
         chmod +x "${dst}"
         log_info "chmod +x: ${dst_rel}"
     fi
 
-    # Update lockfile
     lockfile_update "${dst_rel}" "${src_sha}" "${SCRIPT_VERSION}" "$(ts)"
 
     log_ok "installed: ${src_rel}  →  ${dst}"
@@ -349,7 +362,6 @@ install_file() {
 
 # ---------------------------------------------------------------------------
 # Verify a single bundle (read-only)
-# Returns: sets VFY_* lists
 # ---------------------------------------------------------------------------
 verify_bundle() {
     local product="$1"
@@ -361,12 +373,10 @@ verify_bundle() {
     echo ""
     echo "─── Verify: ${product} ──────────────────────────────────────────"
 
-    # Check 1: all files present + perms
     while IFS= read -r line; do
         [[ -z "${line}" ]] && continue
         local needs_exec=""
         local clean_line="${line}"
-        # Strip :x exec-flag suffix BEFORE extracting dst_rel
         if [[ "${line}" =~ :x$ ]]; then
             needs_exec="x"
             clean_line="${line%:x}"
@@ -381,7 +391,6 @@ verify_bundle() {
         else
             log_vfy "PRESENT: ${dst_rel}"
 
-            # Exec bit check for .sh files
             if [[ "${dst_rel}" == *.sh ]] || [[ "${needs_exec}" == "x" ]]; then
                 if [[ ! -x "${dst}" ]]; then
                     log_fail "NOT EXECUTABLE: ${dst_rel}"
@@ -392,7 +401,6 @@ verify_bundle() {
                 fi
             fi
 
-            # Lockfile integrity check
             local lock_sha
             lock_sha="$(lockfile_get_sha "${dst_rel}")"
             if [[ -n "${lock_sha}" ]]; then
@@ -411,7 +419,6 @@ verify_bundle() {
         fi
     done < <(bundle_files "${product}")
 
-    # Check 2: Agent911 state visibility
     case "${product}" in
         radcheck)
             local rc_score
@@ -435,17 +442,6 @@ verify_bundle() {
                 reasons="${reasons}A911_SENTINEL_ABSENT;"
             fi
             ;;
-        sphinxgate)
-            local routing
-            routing="$(a911_field "routing" 2>/dev/null || echo "unknown")"
-            if [[ "${routing}" != "unknown" && "${routing}" != "" ]]; then
-                log_vfy "A911 VISIBLE: sphinxgate (routing field present)"
-            else
-                log_vfy "A911 NOT_VISIBLE: routing field absent"
-                a911_ok=false
-                reasons="${reasons}A911_SPHINXGATE_ABSENT;"
-            fi
-            ;;
         agent911)
             local schema
             schema="$(a911_field "schema_version" 2>/dev/null || echo "unknown")"
@@ -459,7 +455,6 @@ verify_bundle() {
             ;;
     esac
 
-    # Check 3: ops_events.log install event (advisory)
     local has_install_event="NO"
     if [[ -f "${OPS_EVENTS_LOG}" ]]; then
         if grep -q "\"product\":\"${product}\"" "${OPS_EVENTS_LOG}" 2>/dev/null; then
@@ -470,7 +465,6 @@ verify_bundle() {
         fi
     fi
 
-    # Determine overall status
     local status="PASS"
     local installed_str="YES"
     local wired_str="YES"
@@ -478,7 +472,7 @@ verify_bundle() {
 
     [[ "${installed_ok}" == "false" ]] && { status="FAIL"; installed_str="NO"; }
     [[ "${wired_ok}" == "false" ]]     && { status="FAIL"; wired_str="NO"; }
-    [[ "${a911_ok}" == "false" ]]      && { a911_str="NO"; }  # advisory, not FAIL
+    [[ "${a911_ok}" == "false" ]]      && { a911_str="NO"; }
 
     emit_event "INSTALL_VERIFY_RESULT" \
         "product=${product}" \
@@ -489,7 +483,6 @@ verify_bundle() {
         "status=${status}" \
         "reasons=${reasons}"
 
-    # Append to summary lists
     VFY_BUNDLES="${VFY_BUNDLES}${product} "
     VFY_INSTALLED="${VFY_INSTALLED}${installed_str} "
     VFY_WIRED="${VFY_WIRED}${wired_str} "
@@ -594,7 +587,6 @@ for product in ${SELECTED_BUNDLES}; do
         [[ -z "${line}" ]] && continue
         local_needs_exec=""
         [[ "${line}" =~ :x$ ]] && local_needs_exec="x"
-        # Strip the :x suffix before splitting
         local_line="${line%:x}"
         src_rel="${local_line%%:*}"
         dst_rel="${local_line##*:}"
